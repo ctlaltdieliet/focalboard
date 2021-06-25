@@ -20,10 +20,10 @@
 		"cypress:run:firefox": "cypress run --browser firefox",
 		"cypress:run:edge": "cypress run --browser edge",
 		"cypress:run:electron": "cypress run --browser electron",
-		"cypress:open": "cypress open"
+		"cypress:open": "cypress open",
+		"updatesnapshots": "jest --updateSnapshot"
 	},
 	"dependencies": {
-		"cypress": "^6.8.0",
 		"emoji-mart": "^3.0.1",
 		"imagemin-gifsicle": "^7.0.0",
 		"imagemin-mozjpeg": "^9.0.0",
@@ -31,6 +31,7 @@
 		"imagemin-pngquant": "^9.0.2",
 		"imagemin-svgo": "^8.0.0",
 		"imagemin-webp": "^6.0.0",
+		"lodash": "^4.17.21",
 		"marked": ">=2.0.1",
 		"moment": "^2.29.1",
 		"nanoevents": "^5.1.13",
@@ -49,11 +50,11 @@
 	},
 	"jest": {
 		"moduleNameMapper": {
-			"\\.(scss)$": "<rootDir>/__mocks__/styleMock.js"
+			"\\.(scss|css)$": "<rootDir>/__mocks__/styleMock.js"
 		},
 		"globals": {
 			"ts-jest": {
-				"tsConfig": "./src/tsconfig.json"
+				"tsconfig": "./src/tsconfig.json"
 			}
 		},
 		"transform": {
@@ -68,8 +69,10 @@
 	"devDependencies": {
 		"@formatjs/cli": "^3.2.0",
 		"@formatjs/ts-transformer": "^3.2.1",
+		"@testing-library/dom": "^7.31.2",
 		"@testing-library/jest-dom": "^5.11.10",
 		"@testing-library/react": "^11.2.5",
+		"@testing-library/user-event": "^13.1.9",
 		"@types/emoji-mart": "^3.0.4",
 		"@types/jest": "^26.0.21",
 		"@types/marked": "^2.0.0",

@@ -21,6 +21,11 @@ const (
 // Type and function aliases from Logr to limit the spread of dependencies throughout Focalboard.
 type Field = logr.Field
 type Level = logr.Level
+type Option = logr.Option
+type Target = logr.Target
+type LogRec = logr.LogRec
+type LogCloner = logr.LogCloner
+type MetricsCollector = logr.MetricsCollector
 
 // Any picks the best supported field type based on type of val.
 // For best performance when passing a struct (or struct pointer),
@@ -101,9 +106,9 @@ type Logger struct {
 	log *logr.Logger
 }
 
-// NewLogger creates a new Logger instance which can be configured via `(*Logger).Configure`
-func NewLogger() *Logger {
-	lgr, _ := logr.New()
+// NewLogger creates a new Logger instance which can be configured via `(*Logger).Configure`.
+func NewLogger(options ...Option) *Logger {
+	lgr, _ := logr.New(options...)
 	log := lgr.NewLogger()
 
 	return &Logger{
@@ -112,36 +117,37 @@ func NewLogger() *Logger {
 }
 
 // Configure provides a new configuration for this logger.
-// Zero or more sources of config can be provided, with target name collisions resolved using the
-// following precedence:
-//     cfgFile > cfgJson
+// Zero or more sources of config can be provided:
+//   cfgFile    - path to file containing JSON
+//   cfgEscaped - JSON string probably from ENV var
+//
+// For each case JSON containing log targets is provided. Target name collisions are resolved
+// using the following precedence:
+//     cfgFile > cfgEscaped
 func (l *Logger) Configure(cfgFile string, cfgEscaped string) error {
 	cfgMap := make(LoggerConfig)
 
 	// Add config from file
 	if cfgFile != "" {
-		if b, err := ioutil.ReadFile(string(cfgFile)); err != nil {
+		b, err := ioutil.ReadFile(cfgFile)
+		if err != nil {
 			return fmt.Errorf("error reading logger config file %s: %w", cfgFile, err)
-		} else {
-			var mapCfgFile LoggerConfig
-			if err := json.Unmarshal(b, &mapCfgFile); err != nil {
-				return fmt.Errorf("error decoding logger config file %s: %w", cfgFile, err)
-			}
-			cfgMap.append(mapCfgFile)
 		}
+
+		var mapCfgFile LoggerConfig
+		if err := json.Unmarshal(b, &mapCfgFile); err != nil {
+			return fmt.Errorf("error decoding logger config file %s: %w", cfgFile, err)
+		}
+		cfgMap.append(mapCfgFile)
 	}
 
 	// Add config from escaped json string
 	if cfgEscaped != "" {
-		if b, err := decodeEscapedJSONString(string(cfgEscaped)); err != nil {
-			return fmt.Errorf("error unescaping logger config as escaped json: %w", err)
-		} else {
-			var mapCfgEscaped LoggerConfig
-			if err := json.Unmarshal(b, &mapCfgEscaped); err != nil {
-				return fmt.Errorf("error decoding logger config as escaped json: %w", err)
-			}
-			cfgMap.append(mapCfgEscaped)
+		var mapCfgEscaped LoggerConfig
+		if err := json.Unmarshal([]byte(cfgEscaped), &mapCfgEscaped); err != nil {
+			return fmt.Errorf("error decoding logger config as escaped json: %w", err)
 		}
+		cfgMap.append(mapCfgEscaped)
 	}
 
 	if len(cfgMap) == 0 {
@@ -149,18 +155,6 @@ func (l *Logger) Configure(cfgFile string, cfgEscaped string) error {
 	}
 
 	return logrcfg.ConfigureTargets(l.log.Logr(), cfgMap, nil)
-}
-
-func decodeEscapedJSONString(s string) ([]byte, error) {
-	type wrapper struct {
-		wrap string
-	}
-	var wrapped wrapper
-	ss := fmt.Sprintf("{\"wrap\":%s}", s)
-	if err := json.Unmarshal([]byte(ss), &wrapped); err != nil {
-		return nil, err
-	}
-	return []byte(wrapped.wrap), nil
 }
 
 // With creates a new Logger with the specified fields. This is a light-weight
@@ -179,7 +173,7 @@ func (l *Logger) With(fields ...Field) *Logger {
 // Note, transformations and serializations done via fields are already
 // lazily evaluated and don't require this check beforehand.
 func (l *Logger) IsLevelEnabled(level Level) bool {
-	return l.IsLevelEnabled(level)
+	return l.log.IsLevelEnabled(level)
 }
 
 // Log emits the log record for any targets configured for the specified level.
@@ -222,7 +216,7 @@ func (l *Logger) Error(msg string, fields ...Field) {
 // followed by `os.Exit(1)`.
 func (l *Logger) Fatal(msg string, fields ...Field) {
 	l.log.Log(logr.Fatal, msg, fields...)
-	l.Shutdown()
+	_ = l.Shutdown()
 	os.Exit(1)
 }
 

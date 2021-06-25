@@ -24,7 +24,7 @@ type Props = {
     intl: IntlShape
     readonly: boolean
     onCardClicked: (e: React.MouseEvent, card: Card) => void
-    addCard: (groupByOptionId?: string) => Promise<void>
+    addCard: (groupByOptionId?: string, show?:boolean) => Promise<void>
 }
 
 type State = {
@@ -136,7 +136,7 @@ class Kanban extends React.Component<Props, State> {
                             {!this.props.readonly &&
                                 <Button
                                     onClick={() => {
-                                        this.props.addCard(group.option.id)
+                                        this.props.addCard(group.option.id, true)
                                     }}
                                 >
                                     <FormattedMessage
@@ -228,7 +228,8 @@ class Kanban extends React.Component<Props, State> {
             const srcIndex = visibleOptionIds.indexOf(dstOption.id)
             const destIndex = visibleOptionIds.indexOf(option.id)
 
-            visibleOptionIds.splice(destIndex, 0, visibleOptionIds.splice(srcIndex, 1)[0])
+            visibleOptionIds[srcIndex] = option.id
+            visibleOptionIds[destIndex] = dstOption.id
 
             await mutator.changeViewVisibleOptionIds(activeView, visibleOptionIds)
         }

@@ -1,11 +1,12 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+//nolint:gomnd
 package mlog
 
 import "github.com/mattermost/logr/v2"
 
-// Standard levels
+// Standard levels.
 var (
 	Panic  = logr.Panic // ID = 0
 	Fatal  = logr.Fatal // ID = 1
@@ -30,9 +31,10 @@ var (
 
 	// add more here ...
 	Telemetry = Level{ID: 500, Name: "telemetry"}
+	Metrics   = Level{ID: 501, Name: "metrics"}
 )
 
-// Combinations for LogM (log multi)
+// Combinations for LogM (log multi).
 var (
 /* Example
 MAuditAll = []Level{AuditAPI, AuditContent, AuditPerms, AuditCLI}

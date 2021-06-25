@@ -27,7 +27,7 @@ func SetupTests(t *testing.T) (store.Store, func()) {
 	require.Nil(t, err)
 
 	tearDown := func() {
-		defer logger.Shutdown()
+		defer func() { _ = logger.Shutdown() }()
 		err = store.Shutdown()
 		require.Nil(t, err)
 	}
@@ -39,4 +39,5 @@ func TestBlocksStore(t *testing.T) {
 	t.Run("BlocksStore", func(t *testing.T) { storetests.StoreTestBlocksStore(t, SetupTests) })
 	t.Run("SharingStore", func(t *testing.T) { storetests.StoreTestSharingStore(t, SetupTests) })
 	t.Run("SystemStore", func(t *testing.T) { storetests.StoreTestSystemStore(t, SetupTests) })
+	t.Run("UserStore", func(t *testing.T) { storetests.StoreTestUserStore(t, SetupTests) })
 }

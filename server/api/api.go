@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,43 +14,43 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/mattermost/focalboard/server/app"
 	"github.com/mattermost/focalboard/server/model"
+	"github.com/mattermost/focalboard/server/services/audit"
 	"github.com/mattermost/focalboard/server/services/mlog"
 	"github.com/mattermost/focalboard/server/services/store"
 	"github.com/mattermost/focalboard/server/utils"
 )
 
 const (
-	HEADER_REQUESTED_WITH     = "X-Requested-With"
-	HEADER_REQUESTED_WITH_XML = "XMLHttpRequest"
+	HeaderRequestedWith    = "X-Requested-With"
+	HeaderRequestedWithXML = "XMLHttpRequest"
+	SingleUser             = "single-user"
 )
 
 const (
-	ERROR_NO_WORKSPACE_CODE    = 1000
-	ERROR_NO_WORKSPACE_MESSAGE = "No workspace"
+	ErrorNoWorkspaceCode    = 1000
+	ErrorNoWorkspaceMessage = "No workspace"
 )
 
 // ----------------------------------------------------------------------------------------------------
 // REST APIs
 
 type API struct {
-	appBuilder      func() *app.App
+	app             *app.App
 	authService     string
 	singleUserToken string
 	MattermostAuth  bool
 	logger          *mlog.Logger
+	audit           *audit.Audit
 }
 
-func NewAPI(appBuilder func() *app.App, singleUserToken string, authService string, logger *mlog.Logger) *API {
+func NewAPI(app *app.App, singleUserToken string, authService string, logger *mlog.Logger, audit *audit.Audit) *API {
 	return &API{
-		appBuilder:      appBuilder,
+		app:             app,
 		singleUserToken: singleUserToken,
 		authService:     authService,
 		logger:          logger,
+		audit:           audit,
 	}
-}
-
-func (a *API) app() *app.App {
-	return a.appBuilder()
 }
 
 func (a *API) RegisterRoutes(r *mux.Router) {
@@ -71,6 +70,7 @@ func (a *API) RegisterRoutes(r *mux.Router) {
 
 	apiv1.HandleFunc("/workspaces/{workspaceID}", a.sessionRequired(a.handleGetWorkspace)).Methods("GET")
 	apiv1.HandleFunc("/workspaces/{workspaceID}/regenerate_signup_token", a.sessionRequired(a.handlePostWorkspaceRegenerateSignupToken)).Methods("POST")
+	apiv1.HandleFunc("/workspaces/{workspaceID}/users", a.sessionRequired(a.getWorkspaceUsers)).Methods("GET")
 
 	// User APIs
 	apiv1.HandleFunc("/users/me", a.sessionRequired(a.handleGetMe)).Methods("GET")
@@ -105,13 +105,8 @@ func (a *API) requireCSRFToken(next http.Handler) http.Handler {
 }
 
 func (a *API) checkCSRFToken(r *http.Request) bool {
-	token := r.Header.Get(HEADER_REQUESTED_WITH)
-
-	if token == HEADER_REQUESTED_WITH_XML {
-		return true
-	}
-
-	return false
+	token := r.Header.Get(HeaderRequestedWith)
+	return token == HeaderRequestedWithXML
 }
 
 func (a *API) hasValidReadTokenForBlock(r *http.Request, container store.Container, blockID string) bool {
@@ -122,7 +117,7 @@ func (a *API) hasValidReadTokenForBlock(r *http.Request, container store.Contain
 		return false
 	}
 
-	isValid, err := a.app().IsValidReadToken(container, blockID, readToken)
+	isValid, err := a.app.IsValidReadToken(container, blockID, readToken)
 	if err != nil {
 		a.logger.Error("IsValidReadToken ERROR", mlog.Err(err))
 		return false
@@ -149,7 +144,7 @@ func (a *API) getContainerAllowingReadTokenForBlock(r *http.Request, blockID str
 		}
 
 		// Has session and access to workspace
-		if session != nil && a.app().DoesUserHaveWorkspaceAccess(session.UserID, container.WorkspaceID) {
+		if session != nil && a.app.DoesUserHaveWorkspaceAccess(session.UserID, container.WorkspaceID) {
 			return &container, nil
 		}
 
@@ -158,7 +153,7 @@ func (a *API) getContainerAllowingReadTokenForBlock(r *http.Request, blockID str
 			return &container, nil
 		}
 
-		return nil, errors.New("Access denied to workspace")
+		return nil, errors.New("access denied to workspace")
 	}
 
 	// Native auth: always use root workspace
@@ -176,7 +171,7 @@ func (a *API) getContainerAllowingReadTokenForBlock(r *http.Request, blockID str
 		return &container, nil
 	}
 
-	return nil, errors.New("Access denied to workspace")
+	return nil, errors.New("access denied to workspace")
 }
 
 func (a *API) getContainer(r *http.Request) (*store.Container, error) {
@@ -230,7 +225,12 @@ func (a *API) handleGetBlocks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	blocks, err := a.app().GetBlocks(*container, parentID, blockType)
+	auditRec := a.makeAuditRecord(r, "getBlocks", audit.Fail)
+	defer a.audit.LogRecord(audit.LevelRead, auditRec)
+	auditRec.AddMeta("parentID", parentID)
+	auditRec.AddMeta("blockType", blockType)
+
+	blocks, err := a.app.GetBlocks(*container, parentID, blockType)
 	if err != nil {
 		a.errorResponse(w, http.StatusInternalServerError, "", err)
 		return
@@ -249,18 +249,25 @@ func (a *API) handleGetBlocks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonBytesResponse(w, http.StatusOK, json)
+
+	auditRec.AddMeta("blockCount", len(blocks))
+	auditRec.Success()
 }
 
-func stampModifiedByUser(r *http.Request, blocks []model.Block) {
+func stampModifiedByUser(r *http.Request, blocks []model.Block, auditRec *audit.Record) {
 	ctx := r.Context()
 	session := ctx.Value("session").(*model.Session)
 	userID := session.UserID
-	if userID == "single-user" {
+	if userID == SingleUser {
 		userID = ""
 	}
 
 	for i := range blocks {
 		blocks[i].ModifiedBy = userID
+
+		if auditRec != nil {
+			auditRec.AddMeta("block_"+strconv.FormatInt(int64(i), 10), blocks[i])
+		}
 	}
 }
 
@@ -337,9 +344,12 @@ func (a *API) handlePostBlocks(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	stampModifiedByUser(r, blocks)
+	auditRec := a.makeAuditRecord(r, "postBlocks", audit.Fail)
+	defer a.audit.LogRecord(audit.LevelModify, auditRec)
 
-	err = a.app().InsertBlocks(*container, blocks)
+	stampModifiedByUser(r, blocks, auditRec)
+
+	err = a.app.InsertBlocks(*container, blocks)
 	if err != nil {
 		a.errorResponse(w, http.StatusInternalServerError, "", err)
 		return
@@ -347,6 +357,9 @@ func (a *API) handlePostBlocks(w http.ResponseWriter, r *http.Request) {
 
 	a.logger.Debug("POST Blocks", mlog.Int("block_count", len(blocks)))
 	jsonStringResponse(w, http.StatusOK, "{}")
+
+	auditRec.AddMeta("blockCount", len(blocks))
+	auditRec.Success()
 }
 
 func (a *API) handleGetUser(w http.ResponseWriter, r *http.Request) {
@@ -378,7 +391,11 @@ func (a *API) handleGetUser(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	userID := vars["userID"]
 
-	user, err := a.app().GetUser(userID)
+	auditRec := a.makeAuditRecord(r, "postBlocks", audit.Fail)
+	defer a.audit.LogRecord(audit.LevelRead, auditRec)
+	auditRec.AddMeta("userID", userID)
+
+	user, err := a.app.GetUser(userID)
 	if err != nil {
 		a.errorResponse(w, http.StatusInternalServerError, "", err)
 		return
@@ -391,6 +408,7 @@ func (a *API) handleGetUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonBytesResponse(w, http.StatusOK, userData)
+	auditRec.Success()
 }
 
 func (a *API) handleGetMe(w http.ResponseWriter, r *http.Request) {
@@ -418,17 +436,20 @@ func (a *API) handleGetMe(w http.ResponseWriter, r *http.Request) {
 	var user *model.User
 	var err error
 
-	if session.UserID == "single-user" {
+	auditRec := a.makeAuditRecord(r, "getMe", audit.Fail)
+	defer a.audit.LogRecord(audit.LevelRead, auditRec)
+
+	if session.UserID == SingleUser {
 		now := time.Now().Unix()
 		user = &model.User{
-			ID:       "single-user",
-			Username: "single-user",
-			Email:    "single-user",
+			ID:       SingleUser,
+			Username: SingleUser,
+			Email:    SingleUser,
 			CreateAt: now,
 			UpdateAt: now,
 		}
 	} else {
-		user, err = a.app().GetUser(session.UserID)
+		user, err = a.app.GetUser(session.UserID)
 		if err != nil {
 			a.errorResponse(w, http.StatusInternalServerError, "", err)
 			return
@@ -442,6 +463,9 @@ func (a *API) handleGetMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonBytesResponse(w, http.StatusOK, userData)
+
+	auditRec.AddMeta("userID", user.ID)
+	auditRec.Success()
 }
 
 func (a *API) handleDeleteBlock(w http.ResponseWriter, r *http.Request) {
@@ -486,15 +510,20 @@ func (a *API) handleDeleteBlock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = a.app().DeleteBlock(*container, blockID, userID)
+	auditRec := a.makeAuditRecord(r, "deleteBlock", audit.Fail)
+	defer a.audit.LogRecord(audit.LevelModify, auditRec)
+	auditRec.AddMeta("blockID", blockID)
+
+	err = a.app.DeleteBlock(*container, blockID, userID)
 	if err != nil {
 		a.errorResponse(w, http.StatusInternalServerError, "", err)
-
 		return
 	}
 
 	a.logger.Debug("DELETE Block", mlog.String("blockID", blockID))
 	jsonStringResponse(w, http.StatusOK, "{}")
+
+	auditRec.Success()
 }
 
 func (a *API) handleGetSubTree(w http.ResponseWriter, r *http.Request) {
@@ -558,7 +587,11 @@ func (a *API) handleGetSubTree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	blocks, err := a.app().GetSubTree(*container, blockID, int(levels))
+	auditRec := a.makeAuditRecord(r, "getSubTree", audit.Fail)
+	defer a.audit.LogRecord(audit.LevelRead, auditRec)
+	auditRec.AddMeta("blockID", blockID)
+
+	blocks, err := a.app.GetSubTree(*container, blockID, int(levels))
 	if err != nil {
 		a.errorResponse(w, http.StatusInternalServerError, "", err)
 		return
@@ -576,6 +609,9 @@ func (a *API) handleGetSubTree(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonBytesResponse(w, http.StatusOK, json)
+
+	auditRec.AddMeta("blockCount", len(blocks))
+	auditRec.Success()
 }
 
 func (a *API) handleExport(w http.ResponseWriter, r *http.Request) {
@@ -614,16 +650,28 @@ func (a *API) handleExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	blocks := []model.Block{}
+	auditRec := a.makeAuditRecord(r, "export", audit.Fail)
+	defer a.audit.LogRecord(audit.LevelRead, auditRec)
+	auditRec.AddMeta("rootID", rootID)
+
+	var blocks []model.Block
 	if rootID == "" {
-		blocks, err = a.app().GetAllBlocks(*container)
+		blocks, err = a.app.GetAllBlocks(*container)
 	} else {
-		blocks, err = a.app().GetBlocksWithRootID(*container, rootID)
+		blocks, err = a.app.GetBlocksWithRootID(*container, rootID)
+	}
+	if err != nil {
+		a.errorResponse(w, http.StatusInternalServerError, "", err)
+		return
 	}
 
 	a.logger.Debug("raw blocks", mlog.Int("block_count", len(blocks)))
+	auditRec.AddMeta("rawCount", len(blocks))
+
 	blocks = filterOrphanBlocks(blocks)
+
 	a.logger.Debug("EXPORT filtered blocks", mlog.Int("block_count", len(blocks)))
+	auditRec.AddMeta("filteredCount", len(blocks))
 
 	json, err := json.Marshal(blocks)
 	if err != nil {
@@ -632,6 +680,8 @@ func (a *API) handleExport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonBytesResponse(w, http.StatusOK, json)
+
+	auditRec.Success()
 }
 
 func filterOrphanBlocks(blocks []model.Block) (ret []model.Block) {
@@ -667,15 +717,6 @@ func filterOrphanBlocks(blocks []model.Block) (ret []model.Block) {
 	}
 
 	return blocks
-}
-
-func arrayContainsBlockWithID(array []model.Block, blockID string) bool {
-	for _, item := range array {
-		if item.ID == blockID {
-			return true
-		}
-	}
-	return false
 }
 
 func (a *API) handleImport(w http.ResponseWriter, r *http.Request) {
@@ -730,16 +771,22 @@ func (a *API) handleImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	stampModifiedByUser(r, blocks)
+	auditRec := a.makeAuditRecord(r, "import", audit.Fail)
+	defer a.audit.LogRecord(audit.LevelModify, auditRec)
 
-	err = a.app().InsertBlocks(*container, blocks)
+	stampModifiedByUser(r, blocks, auditRec)
+
+	err = a.app.InsertBlocks(*container, blocks)
 	if err != nil {
 		a.errorResponse(w, http.StatusInternalServerError, "", err)
 		return
 	}
 
-	a.logger.Debug("IMPORT Blocks", mlog.Int("block_count", len(blocks)))
 	jsonStringResponse(w, http.StatusOK, "{}")
+
+	a.logger.Debug("IMPORT Blocks", mlog.Int("block_count", len(blocks)))
+	auditRec.AddMeta("blockCount", len(blocks))
+	auditRec.Success()
 }
 
 // Sharing
@@ -784,7 +831,11 @@ func (a *API) handleGetSharing(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sharing, err := a.app().GetSharing(*container, rootID)
+	auditRec := a.makeAuditRecord(r, "getSharing", audit.Fail)
+	defer a.audit.LogRecord(audit.LevelRead, auditRec)
+	auditRec.AddMeta("rootID", rootID)
+
+	sharing, err := a.app.GetSharing(*container, rootID)
 	if err != nil {
 		a.errorResponse(w, http.StatusInternalServerError, "", err)
 		return
@@ -796,8 +847,19 @@ func (a *API) handleGetSharing(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.logger.Debug("GET sharing", mlog.String("rootID", rootID))
 	jsonBytesResponse(w, http.StatusOK, sharingData)
+
+	if sharing == nil {
+		sharing = &model.Sharing{}
+	}
+	a.logger.Debug("GET sharing",
+		mlog.String("rootID", rootID),
+		mlog.String("shareID", sharing.ID),
+		mlog.Bool("enabled", sharing.Enabled),
+	)
+	auditRec.AddMeta("shareID", sharing.ID)
+	auditRec.AddMeta("enabled", sharing.Enabled)
+	auditRec.Success()
 }
 
 func (a *API) handlePostSharing(w http.ResponseWriter, r *http.Request) {
@@ -855,23 +917,30 @@ func (a *API) handlePostSharing(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	auditRec := a.makeAuditRecord(r, "postSharing", audit.Fail)
+	defer a.audit.LogRecord(audit.LevelModify, auditRec)
+	auditRec.AddMeta("shareID", sharing.ID)
+	auditRec.AddMeta("enabled", sharing.Enabled)
+
 	// Stamp ModifiedBy
 	ctx := r.Context()
 	session := ctx.Value("session").(*model.Session)
 	userID := session.UserID
-	if userID == "single-user" {
+	if userID == SingleUser {
 		userID = ""
 	}
 	sharing.ModifiedBy = userID
 
-	err = a.app().UpsertSharing(*container, sharing)
+	err = a.app.UpsertSharing(*container, sharing)
 	if err != nil {
 		a.errorResponse(w, http.StatusInternalServerError, "", err)
 		return
 	}
 
-	a.logger.Debug("POST sharing", mlog.String("sharingID", sharing.ID))
 	jsonStringResponse(w, http.StatusOK, "{}")
+
+	a.logger.Debug("POST sharing", mlog.String("sharingID", sharing.ID))
+	auditRec.Success()
 }
 
 // Workspace
@@ -911,12 +980,12 @@ func (a *API) handleGetWorkspace(w http.ResponseWriter, r *http.Request) {
 
 		ctx := r.Context()
 		session := ctx.Value("session").(*model.Session)
-		if !a.app().DoesUserHaveWorkspaceAccess(session.UserID, workspaceID) {
+		if !a.app.DoesUserHaveWorkspaceAccess(session.UserID, workspaceID) {
 			a.errorResponse(w, http.StatusUnauthorized, "", nil)
 			return
 		}
 
-		workspace, err = a.app().GetWorkspace(workspaceID)
+		workspace, err = a.app.GetWorkspace(workspaceID)
 		if err != nil {
 			a.errorResponse(w, http.StatusInternalServerError, "", err)
 		}
@@ -925,12 +994,16 @@ func (a *API) handleGetWorkspace(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		workspace, err = a.app().GetRootWorkspace()
+		workspace, err = a.app.GetRootWorkspace()
 		if err != nil {
 			a.errorResponse(w, http.StatusInternalServerError, "", err)
 			return
 		}
 	}
+
+	auditRec := a.makeAuditRecord(r, "getWorkspace", audit.Fail)
+	defer a.audit.LogRecord(audit.LevelRead, auditRec)
+	auditRec.AddMeta("resultWorkspaceID", workspace.ID)
 
 	workspaceData, err := json.Marshal(workspace)
 	if err != nil {
@@ -939,6 +1012,7 @@ func (a *API) handleGetWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonBytesResponse(w, http.StatusOK, workspaceData)
+	auditRec.Success()
 }
 
 func (a *API) handlePostWorkspaceRegenerateSignupToken(w http.ResponseWriter, r *http.Request) {
@@ -965,21 +1039,25 @@ func (a *API) handlePostWorkspaceRegenerateSignupToken(w http.ResponseWriter, r 
 	//     schema:
 	//       "$ref": "#/definitions/ErrorResponse"
 
-	workspace, err := a.app().GetRootWorkspace()
+	workspace, err := a.app.GetRootWorkspace()
 	if err != nil {
 		a.errorResponse(w, http.StatusInternalServerError, "", err)
 		return
 	}
 
+	auditRec := a.makeAuditRecord(r, "regenerateSignupToken", audit.Fail)
+	defer a.audit.LogRecord(audit.LevelModify, auditRec)
+
 	workspace.SignupToken = utils.CreateGUID()
 
-	err = a.app().UpsertWorkspaceSignupToken(*workspace)
+	err = a.app.UpsertWorkspaceSignupToken(*workspace)
 	if err != nil {
 		a.errorResponse(w, http.StatusInternalServerError, "", err)
 		return
 	}
 
 	jsonStringResponse(w, http.StatusOK, "{}")
+	auditRec.Success()
 }
 
 // File upload
@@ -1032,6 +1110,11 @@ func (a *API) handleServeFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	auditRec := a.makeAuditRecord(r, "getFile", audit.Fail)
+	defer a.audit.LogRecord(audit.LevelRead, auditRec)
+	auditRec.AddMeta("rootID", rootID)
+	auditRec.AddMeta("filename", filename)
+
 	contentType := "image/jpg"
 
 	fileExtension := strings.ToLower(filepath.Ext(filename))
@@ -1041,13 +1124,14 @@ func (a *API) handleServeFile(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", contentType)
 
-	fileReader, err := a.app().GetFileReader(workspaceID, rootID, filename)
+	fileReader, err := a.app.GetFileReader(workspaceID, rootID, filename)
 	if err != nil {
 		a.errorResponse(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	defer fileReader.Close()
 	http.ServeContent(w, r, filename, time.Now(), fileReader)
+	auditRec.Success()
 }
 
 // FileUploadResponse is the response to a file upload
@@ -1114,7 +1198,12 @@ func (a *API) handleUploadFile(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	fileId, err := a.app().SaveFile(file, workspaceID, rootID, handle.Filename)
+	auditRec := a.makeAuditRecord(r, "uploadFile", audit.Fail)
+	defer a.audit.LogRecord(audit.LevelModify, auditRec)
+	auditRec.AddMeta("rootID", rootID)
+	auditRec.AddMeta("filename", handle.Filename)
+
+	fileID, err := a.app.SaveFile(file, workspaceID, rootID, handle.Filename)
 	if err != nil {
 		a.errorResponse(w, http.StatusInternalServerError, "", err)
 		return
@@ -1122,15 +1211,77 @@ func (a *API) handleUploadFile(w http.ResponseWriter, r *http.Request) {
 
 	a.logger.Debug("uploadFile",
 		mlog.String("filename", handle.Filename),
-		mlog.String("fileID", fileId),
+		mlog.String("fileID", fileID),
 	)
-	data, err := json.Marshal(FileUploadResponse{FileID: fileId})
+	data, err := json.Marshal(FileUploadResponse{FileID: fileID})
 	if err != nil {
 		a.errorResponse(w, http.StatusInternalServerError, "", err)
 		return
 	}
 
 	jsonBytesResponse(w, http.StatusOK, data)
+
+	auditRec.AddMeta("fileID", fileID)
+	auditRec.Success()
+}
+
+func (a *API) getWorkspaceUsers(w http.ResponseWriter, r *http.Request) {
+	// swagger:operation GET /api/v1/workspaces/{workspaceID}/users getWorkspaceUsers
+	//
+	// Returns workspace users
+	//
+	// ---
+	// produces:
+	// - application/json
+	// parameters:
+	// - name: workspaceID
+	//   in: path
+	//   description: Workspace ID
+	//   required: true
+	//   type: string
+	// security:
+	// - BearerAuth: []
+	// responses:
+	//   '200':
+	//     description: success
+	//     schema:
+	//       type: array
+	//       items:
+	//         "$ref": "#/definitions/User"
+	//   default:
+	//     description: internal error
+	//     schema:
+	//       "$ref": "#/definitions/ErrorResponse"
+
+	vars := mux.Vars(r)
+	workspaceID := vars["workspaceID"]
+
+	ctx := r.Context()
+	session := ctx.Value("session").(*model.Session)
+	if !a.app.DoesUserHaveWorkspaceAccess(session.UserID, workspaceID) {
+		a.errorResponse(w, http.StatusForbidden, "Access denied to workspace", errors.New("access denied to workspace"))
+		return
+	}
+
+	auditRec := a.makeAuditRecord(r, "getUsers", audit.Fail)
+	defer a.audit.LogRecord(audit.LevelRead, auditRec)
+
+	users, err := a.app.GetWorkspaceUsers(workspaceID)
+	if err != nil {
+		a.errorResponse(w, http.StatusInternalServerError, "", err)
+		return
+	}
+
+	data, err := json.Marshal(users)
+	if err != nil {
+		a.errorResponse(w, http.StatusInternalServerError, "", err)
+		return
+	}
+
+	jsonBytesResponse(w, http.StatusOK, data)
+
+	auditRec.AddMeta("userCount", len(users))
+	auditRec.Success()
 }
 
 // Response helpers
@@ -1146,7 +1297,7 @@ func (a *API) errorResponse(w http.ResponseWriter, code int, message string, sou
 		data = []byte("{}")
 	}
 	w.WriteHeader(code)
-	w.Write(data)
+	_, _ = w.Write(data)
 }
 
 func (a *API) errorResponseWithCode(w http.ResponseWriter, statusCode int, errorCode int, message string, sourceError error) {
@@ -1161,27 +1312,21 @@ func (a *API) errorResponseWithCode(w http.ResponseWriter, statusCode int, error
 		data = []byte("{}")
 	}
 	w.WriteHeader(statusCode)
-	w.Write(data)
+	_, _ = w.Write(data)
 }
 
 func (a *API) noContainerErrorResponse(w http.ResponseWriter, sourceError error) {
-	a.errorResponseWithCode(w, http.StatusBadRequest, ERROR_NO_WORKSPACE_CODE, ERROR_NO_WORKSPACE_MESSAGE, sourceError)
+	a.errorResponseWithCode(w, http.StatusBadRequest, ErrorNoWorkspaceCode, ErrorNoWorkspaceMessage, sourceError)
 }
 
-func jsonStringResponse(w http.ResponseWriter, code int, message string) {
+func jsonStringResponse(w http.ResponseWriter, code int, message string) { //nolint:unparam
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	fmt.Fprint(w, message)
 }
 
-func jsonBytesResponse(w http.ResponseWriter, code int, json []byte) {
+func jsonBytesResponse(w http.ResponseWriter, code int, json []byte) { //nolint:unparam
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	w.Write(json)
-}
-
-func addUserID(rw http.ResponseWriter, req *http.Request, next http.Handler) {
-	ctx := context.WithValue(req.Context(), "userid", req.Header.Get("userid"))
-	req = req.WithContext(ctx)
-	next.ServeHTTP(rw, req)
+	_, _ = w.Write(json)
 }

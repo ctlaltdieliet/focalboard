@@ -9,6 +9,7 @@ import (
 
 	"github.com/mattermost/focalboard/server/auth"
 	"github.com/mattermost/focalboard/server/services/config"
+	"github.com/mattermost/focalboard/server/services/metrics"
 	"github.com/mattermost/focalboard/server/services/mlog"
 	"github.com/mattermost/focalboard/server/services/store/mockstore"
 	"github.com/mattermost/focalboard/server/services/webhook"
@@ -23,18 +24,26 @@ type TestHelper struct {
 }
 
 func SetupTestHelper(t *testing.T) *TestHelper {
-
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	cfg := config.Configuration{}
 	store := mockstore.NewMockStore(ctrl)
 	auth := auth.New(&cfg, store)
-	logger := mlog.NewLogger()
-	logger.Configure("", cfg.LoggingEscapedJson)
+	logger := mlog.CreateTestLogger(t)
 	sessionToken := "TESTTOKEN"
 	wsserver := ws.NewServer(auth, sessionToken, false, logger)
 	webhook := webhook.NewClient(&cfg, logger)
-	app2 := New(&cfg, store, auth, wsserver, &mocks.FileBackend{}, webhook, logger)
+	metricsService := metrics.NewMetrics(metrics.InstanceInfo{})
+
+	appServices := Services{
+		Auth:         auth,
+		Store:        store,
+		FilesBackend: &mocks.FileBackend{},
+		Webhook:      webhook,
+		Metrics:      metricsService,
+		Logger:       logger,
+	}
+	app2 := New(&cfg, wsserver, appServices)
 
 	return &TestHelper{
 		App:   app2,

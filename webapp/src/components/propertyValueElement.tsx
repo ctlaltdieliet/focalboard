@@ -12,11 +12,14 @@ import {Utils} from '../utils'
 import {BoardTree} from '../viewModel/boardTree'
 import Editable from '../widgets/editable'
 import ValueSelector from '../widgets/valueSelector'
+
 import Label from '../widgets/label'
 
 import EditableDayPicker from '../widgets/editableDayPicker'
 import Switch from '../widgets/switch'
 
+import UserProperty from './properties/user/user'
+import MultiSelectProperty from './properties/multiSelect'
 import URLProperty from './properties/link/link'
 
 type Props = {
@@ -35,6 +38,7 @@ const PropertyValueElement = (props:Props): JSX.Element => {
     const propertyValue = card.properties[propertyTemplate.id]
     const displayValue = OctoUtils.propertyDisplayValue(card, propertyValue, propertyTemplate, intl)
     const finalDisplayValue = displayValue || emptyDisplayValue
+    const [open, setOpen] = useState(false)
 
     const validateProp = (propType: string, val: string): boolean => {
         if (val === '') {
@@ -60,6 +64,33 @@ const PropertyValueElement = (props:Props): JSX.Element => {
         }
     }
 
+    if (propertyTemplate.type === 'multiSelect') {
+        return (
+            <MultiSelectProperty
+                isEditable={!readOnly && Boolean(boardTree)}
+                emptyValue={emptyDisplayValue}
+                propertyTemplate={propertyTemplate}
+                propertyValue={propertyValue}
+                onChange={(newValue) => mutator.changePropertyValue(card, propertyTemplate.id, newValue)}
+                onChangeColor={(option: IPropertyOption, colorId: string) => mutator.changePropertyOptionColor(boardTree!.board, propertyTemplate, option, colorId)}
+                onDeleteOption={(option: IPropertyOption) => mutator.deletePropertyOption(boardTree!, propertyTemplate, option)}
+                onCreate={
+                    async (newValue, currentValues) => {
+                        const option: IPropertyOption = {
+                            id: Utils.createGuid(),
+                            value: newValue,
+                            color: 'propColorDefault',
+                        }
+                        currentValues.push(option)
+                        await mutator.insertPropertyOption(boardTree!, propertyTemplate, option, 'add property option')
+                        mutator.changePropertyValue(card, propertyTemplate.id, currentValues.map((v) => v.id))
+                    }
+                }
+                onDeleteValue={(valueToDelete, currentValues) => mutator.changePropertyValue(card, propertyTemplate.id, currentValues.filter((currentValue) => currentValue.id !== valueToDelete.id).map((currentValue) => currentValue.id))}
+            />
+        )
+    }
+
     if (propertyTemplate.type === 'select') {
         let propertyColorCssClassName = ''
         const cardPropertyValue = propertyTemplate.options.find((o) => o.id === propertyValue)
@@ -67,11 +98,12 @@ const PropertyValueElement = (props:Props): JSX.Element => {
             propertyColorCssClassName = cardPropertyValue.color
         }
 
-        if (readOnly || !boardTree) {
+        if (readOnly || !boardTree || !open) {
             return (
                 <div
-                    className='octo-property-value'
+                    className='octo-propertyvalue'
                     tabIndex={0}
+                    onClick={() => setOpen(true)}
                 >
                     <Label color={displayValue ? propertyColorCssClassName : 'empty'}>{finalDisplayValue}</Label>
                 </div>
@@ -104,27 +136,33 @@ const PropertyValueElement = (props:Props): JSX.Element => {
                 }
             />
         )
-    } else if (propertyTemplate.type === 'url') {
+    } else if (propertyTemplate.type === 'person') {
         return (
-            <URLProperty
-                value={value}
-                onChange={setValue}
-                onSave={() => mutator.changePropertyValue(card, propertyTemplate.id, value)}
-                onCancel={() => setValue(propertyValue)}
-                validator={(newValue) => validateProp(propertyTemplate.type, newValue)}
+            <UserProperty
+                value={propertyValue as string}
+                readonly={readOnly}
+                onChange={(newValue) => mutator.changePropertyValue(card, propertyTemplate.id, newValue)}
             />
         )
-    }
-
-    if (propertyTemplate.type === 'date') {
+    } else if (propertyTemplate.type === 'date') {
         if (readOnly) {
             return <div className='octo-propertyvalue'>{displayValue}</div>
         }
         return (
             <EditableDayPicker
                 className='octo-propertyvalue'
-                value={value}
+                value={value as string}
                 onChange={(newValue) => mutator.changePropertyValue(card, propertyTemplate.id, newValue)}
+            />
+        )
+    } else if (propertyTemplate.type === 'url') {
+        return (
+            <URLProperty
+                value={value as string}
+                onChange={setValue}
+                onSave={() => mutator.changePropertyValue(card, propertyTemplate.id, value)}
+                onCancel={() => setValue(propertyValue)}
+                validator={(newValue) => validateProp(propertyTemplate.type, newValue)}
             />
         )
     }
@@ -152,7 +190,7 @@ const PropertyValueElement = (props:Props): JSX.Element => {
                 <Editable
                     className='octo-propertyvalue'
                     placeholderText='Empty'
-                    value={value}
+                    value={value as string}
                     onChange={setValue}
                     onSave={() => mutator.changePropertyValue(card, propertyTemplate.id, value)}
                     onCancel={() => setValue(propertyValue)}

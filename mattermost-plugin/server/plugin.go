@@ -3,10 +3,13 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"path"
 	"sync"
 
 	"github.com/mattermost/focalboard/server/server"
 	"github.com/mattermost/focalboard/server/services/config"
+	"github.com/mattermost/focalboard/server/services/mlog"
+
 	"github.com/mattermost/mattermost-server/v5/model"
 	"github.com/mattermost/mattermost-server/v5/plugin"
 )
@@ -78,6 +81,8 @@ func (p *Plugin) OnActivate() error {
 		filesS3Config.Trace = *mmconfig.FileSettings.AmazonS3Trace
 	}
 
+	logger := mlog.NewLogger()
+
 	server, err := server.New(&config.Configuration{
 		ServerRoot:              *mmconfig.ServiceSettings.SiteURL + "/plugins/focalboard",
 		Port:                    -1,
@@ -86,7 +91,7 @@ func (p *Plugin) OnActivate() error {
 		DBTablePrefix:           "focalboard_",
 		UseSSL:                  false,
 		SecureCookie:            true,
-		WebPath:                 "./plugins/focalboard/pack",
+		WebPath:                 path.Join(*mmconfig.PluginSettings.Directory, "focalboard", "pack"),
 		FilesDriver:             *mmconfig.FileSettings.DriverName,
 		FilesPath:               *mmconfig.FileSettings.Directory,
 		FilesS3Config:           filesS3Config,
@@ -98,7 +103,7 @@ func (p *Plugin) OnActivate() error {
 		EnableLocalMode:         false,
 		LocalModeSocketLocation: "",
 		AuthMode:                "mattermost",
-	}, "")
+	}, "", logger)
 	if err != nil {
 		fmt.Println("ERROR INITIALIZING THE SERVER", err)
 		return err

@@ -132,7 +132,7 @@ func (s *SQLStore) GetBlocksWithType(c store.Container, blockType string) ([]mod
 	return s.blocksFromRows(rows)
 }
 
-// GetSubTree2 returns blocks within 2 levels of the given blockID
+// GetSubTree2 returns blocks within 2 levels of the given blockID.
 func (s *SQLStore) GetSubTree2(c store.Container, blockID string) ([]model.Block, error) {
 	query := s.getQueryBuilder().
 		Select(
@@ -162,7 +162,7 @@ func (s *SQLStore) GetSubTree2(c store.Container, blockID string) ([]model.Block
 	return s.blocksFromRows(rows)
 }
 
-// GetSubTree3 returns blocks within 3 levels of the given blockID
+// GetSubTree3 returns blocks within 3 levels of the given blockID.
 func (s *SQLStore) GetSubTree3(c store.Container, blockID string) ([]model.Block, error) {
 	// This first subquery returns repeated blocks
 	query := s.getQueryBuilder().Select(
@@ -363,19 +363,19 @@ func (s *SQLStore) InsertBlock(c store.Container, block model.Block) error {
 		Where(sq.Eq{"COALESCE(workspace_id, '0')": c.WorkspaceID})
 	_, err = sq.ExecContextWith(ctx, tx, deleteQuery)
 	if err != nil {
-		tx.Rollback()
+		_ = tx.Rollback()
 		return err
 	}
 
 	_, err = sq.ExecContextWith(ctx, tx, query.Into(s.tablePrefix+"blocks"))
 	if err != nil {
-		tx.Rollback()
+		_ = tx.Rollback()
 		return err
 	}
 
 	_, err = sq.ExecContextWith(ctx, tx, query.Into(s.tablePrefix+"blocks_history"))
 	if err != nil {
-		tx.Rollback()
+		_ = tx.Rollback()
 		return err
 	}
 
@@ -413,7 +413,7 @@ func (s *SQLStore) DeleteBlock(c store.Container, blockID string, modifiedBy str
 
 	_, err = sq.ExecContextWith(ctx, tx, insertQuery)
 	if err != nil {
-		tx.Rollback()
+		_ = tx.Rollback()
 		return err
 	}
 
@@ -424,7 +424,7 @@ func (s *SQLStore) DeleteBlock(c store.Container, blockID string, modifiedBy str
 
 	_, err = sq.ExecContextWith(ctx, tx, deleteQuery)
 	if err != nil {
-		tx.Rollback()
+		_ = tx.Rollback()
 		return err
 	}
 
@@ -434,4 +434,36 @@ func (s *SQLStore) DeleteBlock(c store.Container, blockID string, modifiedBy str
 	}
 
 	return nil
+}
+
+func (s *SQLStore) GetBlockCountsByType() (map[string]int64, error) {
+	query := s.getQueryBuilder().
+		Select(
+			"type",
+			"COUNT(*) AS count",
+		).
+		From(s.tablePrefix + "blocks").
+		GroupBy("type")
+
+	rows, err := query.Query()
+	if err != nil {
+		s.logger.Error(`GetBlockCountsByType ERROR`, mlog.Err(err))
+
+		return nil, err
+	}
+
+	m := make(map[string]int64)
+
+	for rows.Next() {
+		var blockType string
+		var count int64
+
+		err := rows.Scan(&blockType, &count)
+		if err != nil {
+			s.logger.Error("Failed to fetch block count", mlog.Err(err))
+			return nil, err
+		}
+		m[blockType] = count
+	}
+	return m, nil
 }

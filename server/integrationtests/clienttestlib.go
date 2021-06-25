@@ -27,7 +27,7 @@ func getTestConfig() *config.Configuration {
 		connectionString = ":memory:"
 	}
 
-	logging := []byte(`
+	logging := `
 	{
 		"testing": {
 			"type": "console",
@@ -47,18 +47,18 @@ func getTestConfig() *config.Configuration {
 				{"id": 0, "name": "panic", "stacktrace": true}
 			]
 		}
-	}`)
+	}`
 
 	return &config.Configuration{
-		ServerRoot:         "http://localhost:8888",
-		Port:               8888,
-		DBType:             dbType,
-		DBConfigString:     connectionString,
-		DBTablePrefix:      "test_",
-		WebPath:            "./pack",
-		FilesDriver:        "local",
-		FilesPath:          "./files",
-		LoggingEscapedJson: string(logging),
+		ServerRoot:     "http://localhost:8888",
+		Port:           8888,
+		DBType:         dbType,
+		DBConfigString: connectionString,
+		DBTablePrefix:  "test_",
+		WebPath:        "./pack",
+		FilesDriver:    "local",
+		FilesPath:      "./files",
+		LoggingCfgJSON: logging,
 	}
 }
 
@@ -66,7 +66,9 @@ func SetupTestHelper() *TestHelper {
 	sessionToken := "TESTTOKEN"
 	th := &TestHelper{}
 	logger := mlog.NewLogger()
-	logger.Configure("", getTestConfig().LoggingEscapedJson)
+	if err := logger.Configure("", getTestConfig().LoggingCfgJSON); err != nil {
+		panic(err)
+	}
 	srv, err := server.New(getTestConfig(), sessionToken, logger)
 	if err != nil {
 		panic(err)
@@ -111,7 +113,7 @@ func (th *TestHelper) InitBasic() *TestHelper {
 }
 
 func (th *TestHelper) TearDown() {
-	defer th.Server.Logger().Shutdown()
+	defer func() { _ = th.Server.Logger().Shutdown() }()
 
 	err := th.Server.Shutdown()
 	if err != nil {
